@@ -130,7 +130,8 @@ Every live run needs a config file via **`--config <path>`** or the **`WORKDAY_C
     "Port": 22,
     "User": "sftp_user",
     "Password": "********",
-    "RemoteRoot": "/ROI/Workday"
+    "RemoteRoot": "/ROI/Workday",
+    "PoolSize": 3
   },
   "Tenant_domain": "wdX-impl-services1.workday.com",
   "Tenant_server": "your_tenant"
@@ -142,12 +143,104 @@ Every live run needs a config file via **`--config <path>`** or the **`WORKDAY_C
 | `basicCredentials` | Workday RaaS (Basic Auth) |
 | `soapCredentials` | Staffing / Blobitory SOAP-style auth (`user@tenant`) |
 | `sftpCredentials` | Infor (or other) SFTP uploads |
+| `sftpCredentials.PoolSize` | Concurrent SFTP connections (**1–3**, default **3**) |
 | `Tenant_domain` | Host for Workday service URLs |
 | `Tenant_server` | Tenant name in Workday URLs |
 
 Optional per-field overrides: set `WORKDAY_*` or `SFTP_*` in the environment (or a local `.env`; see `.env.example`). File values apply when overrides are unset.
 
 Keep real passwords out of git; use env-specific config files outside version control when possible.
+
+---
+
+## Performance and reliability features
+
+These features support large (full-population) runs.
+
+### Parallel Workday calls (`--concurrency`)
+
+| Setting | Value |
+|---------|--------|
+| CLI flag | `--concurrency <n>` |
+| Default | **6** |
+| Recommended band | **5–8** |
+
+Controls how many workers are processed in parallel within a batch (Staffing `Get_Workers`, RaaS detail, Blobitory downloads, etc.). Higher values finish faster but may increase Workday load or transient faults.
+
+```bash
+node src/index.js --api education --config ./path/to/config.json --mock false \
+  --max-employees 50 --concurrency 8
+```
+
+### SFTP connection pool
+
+Uploads no longer share a single serialized connection. The uploader opens a **pool** of SFTP sessions:
+
+| Setting | Value |
+|---------|--------|
+| Default pool size | **3** |
+| Allowed range | **1–3** (clamped) |
+| Config | `sftpCredentials.PoolSize` |
+| Env override | `SFTP_POOL_SIZE` |
+
+Up to `PoolSize` files upload at the same time while Workday fetches continue on other workers.
+
+```bash
+# PowerShell example: 3 SFTP connections + 8 API workers
+$env:SFTP_POOL_SIZE = "3"
+node src/index.js --api personal --config .\path\to\config.json --mock false --concurrency 8
+```
+
+### Process files (success + dead-letter)
+
+For the **personal** API (and available as a shared library for other APIs), employee outcomes are recorded as JSONL under `reports/process/`:
+
+| File | Purpose |
+|------|---------|
+| `reports/process/{api}-success-ids.jsonl` | Workers finished successfully — **skipped** on re-run |
+| `reports/process/{api}-dead-letter-ids.jsonl` | Permanent failures (e.g. invalid `Employee_ID`) — **no retry** |
+
+Example success line:
+
+```json
+{"employeeId":"42022","api":"personal","at":"2026-08-05T02:00:00.000Z","files":2}
+```
+
+Example dead-letter line:
+
+```json
+{"employeeId":"32967","api":"personal","reason":"invalid_employee_id","at":"2026-08-05T02:00:00.000Z"}
+```
+
+**Rules:**
+
+1. Before calling Workday/Staffing, if the employee is already in **success** → skip.  
+2. If Staffing rejects an invalid `Employee_ID` → append **dead-letter** and continue (do not fail the whole job).  
+3. Invalid IDs are **not** retried automatically.  
+4. Re-running the same API is safe: completed workers are not re-downloaded.
+
+```mermaid
+flowchart LR
+  ID[Employee ID] --> CHK{Already success?}
+  CHK -->|yes| SKIP1[Skip]
+  CHK -->|no| DL{In dead-letter?}
+  DL -->|yes| SKIP2[Skip]
+  DL -->|no| CALL[Call Workday / Staffing]
+  CALL --> OK{Result}
+  OK -->|files uploaded| SUC[Append success JSONL]
+  OK -->|invalid Employee_ID| DEAD[Append dead-letter JSONL]
+  OK -->|other / no docs| CONT[Continue without process write]
+```
+
+### Unit tests
+
+```bash
+npm test
+# or
+node --test tests/*.test.js
+```
+
+Coverage includes CLI parsing, file naming, concurrency pool behavior, personal document filters, process-tracker rules, and SFTP pool size clamping.
 
 ---
 
@@ -180,9 +273,7 @@ node src/index.js --help
 | `--list-apis` | — | Print registered API names and exit |
 | `-h`, `--help` | — | Help text |
 
-**SFTP:** uploads use a connection pool of **2–3** concurrent sessions (default **3**). Override with `SFTP_POOL_SIZE` or `sftpCredentials.PoolSize` in config (clamped to 1–3).
-
-**Process files (personal API):** successful and permanent-failure employee IDs are recorded under `reports/process/` so full runs can skip already-done workers and dead-letter invalid IDs without retry.
+See [Performance and reliability features](#performance-and-reliability-features) for concurrency, SFTP pool, and process files.
 
 ### List APIs
 
@@ -257,9 +348,33 @@ node src/index.js \
   --concurrency 8
 ```
 
-For `personal`, `--max-employees` means **employees per document category** (not always a global employee cap).
+For `personal`, `--max-employees` means **employees per document category** (not always a global employee cap).  
+Re-runs skip IDs already in `reports/process/personal-success-ids.jsonl` and never retry dead-lettered invalid IDs.
 
-### 5. Generated document / Blobitory-style export
+### 5. Full-population style settings (optimized defaults)
+
+```bash
+node src/index.js \
+  --api personal \
+  --config ./path/to/production-configuration.json \
+  --mock false \
+  --concurrency 6
+```
+
+Uses default concurrency **6** and SFTP pool **3**. Override pool size if needed:
+
+```bash
+# macOS / Linux
+SFTP_POOL_SIZE=2 node src/index.js --api personal --config ./path/to/config.json --mock false --concurrency 8
+```
+
+```powershell
+# Windows PowerShell
+$env:SFTP_POOL_SIZE = "2"
+node src/index.js --api personal --config .\path\to\config.json --mock false --concurrency 8
+```
+
+### 6. Generated document / Blobitory-style export
 
 ```bash
 node src/index.js \
@@ -269,7 +384,7 @@ node src/index.js \
   --max-employees 20
 ```
 
-### 6. Use env var instead of repeating `--config`
+### 7. Use env var instead of repeating `--config`
 
 **macOS / Linux:**
 
@@ -285,7 +400,7 @@ $env:WORKDAY_CONFIG = ".\path\to\production-configuration.json"
 node src/index.js --api pay-increase --mock false --max-employees 50
 ```
 
-### 7. Missing config (expected error)
+### 8. Missing config (expected error)
 
 ```bash
 node src/index.js --api education --mock false
@@ -301,9 +416,10 @@ Exits with an error that `--config` (or `WORKDAY_CONFIG`) is required.
 |----------|----------|
 | `mock/` | Local copies of downloaded files (also used as staging for SFTP) |
 | `reports/` | Per-run JSON and Markdown summaries (`{api}-latest.md`, timestamped runs) |
+| `reports/process/` | Success and dead-letter employee ID JSONL files (personal API) |
 | SFTP remote root | Uploaded files under paths defined by each API’s naming rules |
 
-`mock/` and `reports/` are gitignored by default.
+`mock/` and most of `reports/` are gitignored by default (process files under `reports/process/` are local state for re-runs).
 
 ---
 
@@ -346,8 +462,12 @@ flowchart LR
 |------|------|
 | `src/index.js` | Entry point, validates flags, loads config |
 | `src/apis/` | One handler per `--api` value |
-| `src/lib/` | HTTP/SOAP clients, XML parsing, parallel batching, file naming, SFTP, run reports |
+| `src/lib/` | HTTP/SOAP clients, XML parsing, parallel batching, file naming, SFTP pool, process tracker, run reports |
+| `src/lib/sftp-client.js` | SFTP connection pool (1–3 concurrent uploads) |
+| `src/lib/process-tracker.js` | Success / dead-letter JSONL helpers |
+| `src/lib/parallel.js` | `mapPool` for API concurrency |
 | `src/config.js` | Config load, tenant URL builders, credential accessors |
+| `tests/` | Unit tests (`npm test`) |
 
 ---
 
@@ -371,8 +491,10 @@ npm test
 | Config file not found | Path relative to current directory or project root |
 | Invalid JSON / missing fields | Schema must include soap, basic, tenant domain/server |
 | Workday 401 / SOAP fault | Credentials and tenant name for that environment |
-| Invalid Employee_ID | Some list IDs are not valid for Staffing; treat as skip/dead-letter candidates |
-| SFTP failures | Host, port, user, password, remote root, network allowlist |
+| Invalid Employee_ID | Some list IDs are not valid for Staffing; personal API dead-letters them under `reports/process/` |
+| Re-download after crash | Personal API skips IDs already in the success process file |
+| SFTP failures | Host, port, user, password, remote root, network allowlist; try lowering `SFTP_POOL_SIZE` |
+| Workday timeouts under load | Lower `--concurrency` toward 5 |
 
 ---
 
