@@ -1,4 +1,11 @@
-import { MOCK_FTP_DIR, getWorkdayConfig, getBlobitoryConfig, buildRaasUrl, buildStaffingUrl } from '../config.js';
+import {
+  MOCK_FTP_DIR,
+  getWorkdayConfig,
+  getBlobitoryConfig,
+  buildRaasUrl,
+  buildStaffingUrl,
+  DEFAULT_API_CONCURRENCY,
+} from '../config.js';
 import { fetchWorkersReport } from '../lib/workday-client.js';
 import { fetchWorkerDocumentsSoap } from '../lib/staffing-client.js';
 import {
@@ -11,6 +18,13 @@ import { saveGeneratedDocumentFile } from '../lib/file-saver.js';
 import { FtpUploader } from '../lib/sftp-client.js';
 import { mapPool } from '../lib/parallel.js';
 import { writeRunReport } from '../lib/run-report.js';
+import {
+  loadProcessTracker,
+  recordSuccess,
+  recordDeadLetter,
+  shouldProcessEmployee,
+  isInvalidEmployeeIdError,
+} from '../lib/process-tracker.js';
 
 /** Population sources (union of EmployeeIDs) — same approach as category scan */
 const LIST_REPORTS = ['CR_Export_Certification_-_Copy', 'API_Review_Document_-_Copy', 'API_Education'];
@@ -37,7 +51,7 @@ export async function runPersonal(options = {}) {
     pageSize = 5, // unused (per-employee staffing); kept for CLI compatibility
     maxPages = null,
     maxEmployees = 10, // max employees **per category**
-    concurrency = 5,
+    concurrency = DEFAULT_API_CONCURRENCY,
   } = options;
 
   const apiName = 'personal';
@@ -171,6 +185,14 @@ export async function runPersonal(options = {}) {
         `(or population exhausted)`
     );
 
+    const tracker = await loadProcessTracker(apiName);
+    console.log(
+      `[${apiName}] process files: success=${tracker.successIds.size} ` +
+        `deadLetter=${tracker.deadLetterIds.size}`
+    );
+    console.log(`[${apiName}]   ${tracker.successPath}`);
+    console.log(`[${apiName}]   ${tracker.deadLetterPath}`);
+
     // --- step 2: Get_Workers + upload with per-category employee quota ---
     console.log(
       `[${apiName}] step 2/2: Staffing Get_Workers → filter categories → SFTP`
@@ -233,7 +255,22 @@ export async function runPersonal(options = {}) {
             outcome: null,
             reason: null,
             detail: null,
+            processRecord: null, // success | dead_letter | null
           };
+
+          const gate = shouldProcessEmployee(tracker, employeeId);
+          if (!gate.process) {
+            part.outcome =
+              gate.reason === 'already_success'
+                ? 'skipped_already_success'
+                : 'skipped_dead_letter';
+            part.reason =
+              gate.reason === 'already_success'
+                ? 'Skipped: employee already in success process file'
+                : 'Skipped: employee already in dead-letter process file (invalid ID, no retry)';
+            part.detail = { processGate: gate.reason };
+            return part;
+          }
 
           try {
             const soapXml = await fetchWorkerDocumentsSoap({
@@ -367,6 +404,10 @@ export async function runPersonal(options = {}) {
                 skippedNoCategory,
                 skippedExcluded,
               };
+              part.processRecord = {
+                type: 'success',
+                files: part.uploaded.length,
+              };
               console.log(
                 `  [done]  ${label}: saved=${part.saved.length} ` +
                   `uploaded=${part.uploaded.length} quotaSkip=${part.skippedQuota} ` +
@@ -403,8 +444,18 @@ export async function runPersonal(options = {}) {
           } catch (err) {
             part.errors.push({ employeeId, error: err.message });
             totals.workerErrors.push({ employeeId, error: err.message });
-            part.outcome = 'staffing_error';
-            part.reason = summarizeStaffingError(err.message);
+            if (isInvalidEmployeeIdError(err)) {
+              part.outcome = 'invalid_employee_id';
+              part.reason =
+                'Permanent: Staffing rejected Employee_ID (dead-letter, no retry)';
+              part.processRecord = {
+                type: 'dead_letter',
+                reason: 'invalid_employee_id',
+              };
+            } else {
+              part.outcome = 'staffing_error';
+              part.reason = summarizeStaffingError(err.message);
+            }
             part.detail = { error: err.message };
             console.error(`  [error] ${label}: ${err.message}`);
           }
@@ -433,6 +484,21 @@ export async function runPersonal(options = {}) {
               part.reason || part.outcome,
               part.detail
             );
+          }
+
+          // Persist process files after each worker (idempotent full runs)
+          if (part.processRecord?.type === 'success') {
+            await recordSuccess(tracker, {
+              employeeId: part.employeeId,
+              api: apiName,
+              files: part.processRecord.files ?? part.uploaded.length,
+            });
+          } else if (part.processRecord?.type === 'dead_letter') {
+            await recordDeadLetter(tracker, {
+              employeeId: part.employeeId,
+              api: apiName,
+              reason: part.processRecord.reason || 'invalid_employee_id',
+            });
           }
         }
 

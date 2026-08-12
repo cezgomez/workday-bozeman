@@ -6,6 +6,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "test": "node --test tests/**/*.test.js",
     "report-info:mock": "node src/index.js --api report-info --mock true",
     "report-info": "node src/index.js --api report-info --mock false"
   },

@@ -4,6 +4,9 @@ mock/**
 !mock/.gitkeep
 reports/**
 !reports/.gitkeep
+!reports/process/
+reports/process/**
+!reports/process/.gitkeep
 *.log
 .DS_Store
 assets/*probe*
