@@ -1,0 +1,20 @@
+{
+  "name": "workday-api-client",
+  "version": "1.0.0",
+  "description": "Local CLI to pull Workday RaaS reports and save document attachments",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "report-info:mock": "node src/index.js --api report-info --mock true",
+    "report-info": "node src/index.js --api report-info --mock false"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "fast-xml-parser": "^4.5.1",
+    "ssh2-sftp-client": "^12.1.1"
+  }
+}

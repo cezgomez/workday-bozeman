@@ -1,0 +1,16 @@
+node_modules/
+.env
+mock/**
+!mock/.gitkeep
+reports/**
+!reports/.gitkeep
+*.log
+.DS_Store
+assets/*probe*
+assets/wids-only-probe.json
+assets/all-employees*
+
+# Local credential overrides (keep sample *-configuration.json in repo if desired)
+# assets/credentials/*-configuration.local.json
+private/*
+
