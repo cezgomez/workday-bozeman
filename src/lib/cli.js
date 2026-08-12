@@ -14,7 +14,8 @@ export function parseArgs(argv = process.argv.slice(2)) {
     pageSize: 5,
     maxPages: null,
     maxEmployees: null,
-    concurrency: 5,
+    /** Default 6 (recommended band 5–8 for Workday per-employee calls). */
+    concurrency: 6,
     help: false,
     listApis: false,
   };
@@ -175,12 +176,16 @@ Options:
   --list-apis               List registered --api names and exit
   --mock <true|false>       true  = sample data path; false = live + SFTP
   --page-size <n>           Employees per batch (default: 5)
-  --concurrency <n>         Parallel downloads within a batch (default: 5)
+  --concurrency <n>         Parallel Workday calls per batch (default: 6; try 5–8)
   --max-pages <n>           Stop after N batches
   --max-employees <n>       First N employees (or per-category for personal)
   --worker-wid <wid>        report-info: single worker only
   --workers-file <path>     report-info: local WID list
   -h, --help
+
+SFTP:
+  Concurrent connections default to 3 (range 1–3). Set SFTP_POOL_SIZE or
+  sftpCredentials.PoolSize in the config JSON.
 
 Examples:
   node src/index.js --list-apis

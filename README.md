@@ -172,13 +172,17 @@ node src/index.js --help
 |------|---------|-------------|
 | `--mock <true\|false>` | `false` | `true` = sample/local path when implemented; `false` = live Workday + SFTP |
 | `--page-size <n>` | `5` | Workers per batch |
-| `--concurrency <n>` | `5` | Parallel workers within a batch |
+| `--concurrency <n>` | `6` | Parallel Workday calls per batch (try **5–8**) |
 | `--max-pages <n>` | all | Stop after N batches |
 | `--max-employees <n>` | varies | Cap workers processed (some APIs: per category) |
 | `--worker-wid <wid>` | — | Single worker (where supported) |
 | `--workers-file <path>` | — | Local worker list (where supported) |
 | `--list-apis` | — | Print registered API names and exit |
 | `-h`, `--help` | — | Help text |
+
+**SFTP:** uploads use a connection pool of **2–3** concurrent sessions (default **3**). Override with `SFTP_POOL_SIZE` or `sftpCredentials.PoolSize` in config (clamped to 1–3).
+
+**Process files (personal API):** successful and permanent-failure employee IDs are recorded under `reports/process/` so full runs can skip already-done workers and dead-letter invalid IDs without retry.
 
 ### List APIs
 
@@ -352,9 +356,10 @@ flowchart LR
 ```bash
 npm start -- --list-apis
 npm start -- --api education --config ./path/to/config.json --mock false --max-employees 5
+npm test
 ```
 
-(`npm start` runs `node src/index.js`; pass CLI args after `--`.)
+(`npm start` runs `node src/index.js`; pass CLI args after `--`. `npm test` runs unit tests under `tests/`.)
 
 ---
 

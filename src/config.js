@@ -275,10 +275,19 @@ export function getStaffingConfig() {
 
 /**
  * Infor SFTP from sftpCredentials in the configuration file.
+ * poolSize: concurrent SFTP connections (1–3, default 3).
  */
 export function getSftpConfig() {
   const file = getEnvironmentFileConfig();
   const sftp = file.sftpCredentials || {};
+  const poolRaw =
+    process.env.SFTP_POOL_SIZE ??
+    sftp.PoolSize ??
+    sftp.poolSize ??
+    3;
+  let poolSize = Number(poolRaw);
+  if (!Number.isFinite(poolSize) || poolSize < 1) poolSize = 3;
+  poolSize = Math.min(3, Math.max(1, Math.floor(poolSize)));
   return {
     configPath: getActiveConfigPath(),
     host: envOr(sftp.Host, 'SFTP_HOST') || 'sftp.inforcloudsuite.com',
@@ -286,8 +295,12 @@ export function getSftpConfig() {
     username: envOr(sftp.User, 'SFTP_USERNAME'),
     password: envOr(sftp.Password, 'SFTP_PASSWORD'),
     remoteRoot: envOr(sftp.RemoteRoot, 'SFTP_REMOTE_ROOT') || '/ROI/Workday',
+    poolSize,
   };
 }
+
+/** Recommended default API concurrency (range 5–8). */
+export const DEFAULT_API_CONCURRENCY = 6;
 
 /**
  * One-line summary for logs (no passwords).
